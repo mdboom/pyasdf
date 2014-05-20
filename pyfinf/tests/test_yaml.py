@@ -178,3 +178,14 @@ def test_yaml_nan_inf():
     assert np.isnan(ff.tree['a'])
     assert np.isinf(ff.tree['b'])
     assert np.isinf(ff.tree['c'])
+
+
+def test_set(tmpdir):
+    tree = {
+        'set': set(['a', 'c', 'b'])
+        }
+
+    def check_finf(finf):
+        assert isinstance(finf.tree['set'], set)
+
+    helpers.assert_roundtrip_tree(tree, tmpdir, check_finf)

@@ -36,6 +36,7 @@ from __future__ import absolute_import, division, unicode_literals, print_functi
 
 from astropy.extern import six
 from .compat import UserDict, UserList, UserString
+from .userset import UserSet
 
 
 __all__ = ['tag_object', 'get_tag', 'walk_and_modify_with_tags']
@@ -73,9 +74,20 @@ class TaggedList(Tagged, UserList, list):
 
 class TaggedString(Tagged, UserString, six.text_type):
     """
-    A Python list with a tag attached.
+    A Python string or unicode string with a tag attached.
     """
     pass
+
+
+class TaggedSet(Tagged, UserSet, set):
+    """
+    A Python set with a tag attached.
+    """
+    def __init__(self, data=None, tag=None):
+        if data is None:
+            data = set()
+        self.data = data
+        self.tag = tag
 
 
 def tag_object(tag, instance):
@@ -96,6 +108,8 @@ def tag_object(tag, instance):
         instance = TaggedString(instance)
         instance.tag = tag
         return instance
+    elif isinstance(instance, set):
+        return TaggedSet(instance, tag)
     else:
         raise TypeError(
             "Don't know how to tag a {0}".format(type(instance)))
