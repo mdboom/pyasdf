@@ -19,6 +19,7 @@ from . import generic_io
 from . import reference
 from . import resolver as mresolver
 from . import tagged
+from . import treeutil
 
 
 __all__ = ['validate']
@@ -171,6 +172,20 @@ def create_validator():
     _created_validator = True
 
 
+def _clean_schema(schema):
+    """
+    Removes user-informational parts of the schema so the tracebacks
+    involving schema violations aren't unmanageable and large.
+    """
+    def callback(tree):
+        for entry in ('title', 'description', 'examples'):
+            if isinstance(tree, dict) and entry in tree:
+                del tree[entry]
+
+    treeutil.walk(schema, callback)
+    return schema
+
+
 @lru_cache()
 def _make_schema_loader(resolver):
     @lru_cache()
@@ -181,6 +196,9 @@ def _make_schema_loader(resolver):
                 result = json.load(fd)
             else:
                 result = yaml.safe_load(fd)
+
+        result = _clean_schema(result)
+
         return result
 
     return load_schema
