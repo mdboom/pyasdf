@@ -8,10 +8,13 @@ import os
 import sys
 
 from astropy.extern import six
+from astropy.tests.helper import pytest
 
 import numpy as np
 from numpy import ma
 from numpy.testing import assert_array_equal
+
+import jsonschema
 
 import yaml
 
@@ -403,3 +406,32 @@ def test_masked_array_repr(tmpdir):
 
     with asdf.AsdfFile.open(tmppath) as ff:
         assert 'masked array' in repr(ff.tree['masked'])
+
+
+def test_mask_datatype(tmpdir):
+    content = """
+        arr: !core/ndarray
+            data: [1, 2, 3]
+            dtype: int32
+            mask: !core/ndarray
+                data: [true, true, false]
+    """
+    buff = helpers.yaml_to_asdf(content)
+
+    with asdf.AsdfFile.open(buff) as ff:
+        pass
+
+
+def test_invalid_mask_datatype(tmpdir):
+    content = """
+        arr: !core/ndarray
+            data: [1, 2, 3]
+            dtype: int32
+            mask: !core/ndarray
+                data: ['a', 'b', 'c']
+    """
+    buff = helpers.yaml_to_asdf(content)
+
+    with pytest.raises(jsonschema.ValidationError):
+        with asdf.AsdfFile.open(buff) as ff:
+            pass

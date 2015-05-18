@@ -8,9 +8,11 @@ import os
 
 from astropy.extern import six
 from astropy.utils.compat.odict import OrderedDict
+from astropy.extern.six.moves.urllib import parse as urlparse
 
 from jsonschema import validators
-from jsonschema.exceptions import ValidationError, SchemaError
+from jsonschema.exceptions import ValidationError
+
 import yaml
 
 from .compat import lru_cache
@@ -19,6 +21,7 @@ from . import generic_io
 from . import reference
 from . import resolver as mresolver
 from . import tagged
+from . import treeutil
 from . import util
 
 
@@ -147,10 +150,15 @@ def validate_fill_default(validator, properties, instance, schema):
         if "default" in subschema:
             instance.setdefault(property, subschema["default"])
 
+    for err in validators.Draft4Validator.VALIDATORS['properties'](
+        validator, properties, instance, schema):
+        yield err
 
-FILL_DEFAULTS = util.HashableDict({
-    'properties': validate_fill_default,
-})
+
+FILL_DEFAULTS = util.HashableDict()
+for key in ('allOf', 'anyOf', 'oneOf', 'items'):
+    FILL_DEFAULTS[key] = validators.Draft4Validator.VALIDATORS[key]
+FILL_DEFAULTS['properties'] = validate_fill_default
 
 
 def validate_remove_default(validator, properties, instance, schema):
@@ -158,14 +166,19 @@ def validate_remove_default(validator, properties, instance, schema):
         return
 
     for property, subschema in six.iteritems(properties):
-        if "default" in subschema:
+        if subschema.get("default", None) is not None:
             if instance.get(property, None) == subschema["default"]:
                 del instance[property]
 
+    for err in validators.Draft4Validator.VALIDATORS['properties'](
+        validator, properties, instance, schema):
+        yield err
 
-REMOVE_DEFAULTS = util.HashableDict({
-    'properties': validate_remove_default
-})
+
+REMOVE_DEFAULTS = util.HashableDict()
+for key in ('allOf', 'anyOf', 'oneOf', 'items'):
+    REMOVE_DEFAULTS[key] = validators.Draft4Validator.VALIDATORS[key]
+REMOVE_DEFAULTS['properties'] = validate_remove_default
 
 
 @lru_cache()
@@ -175,6 +188,7 @@ def _create_validator(_validators=YAML_VALIDATORS):
             'http://stsci.edu/schemas/yaml-schema/draft-01',
             mresolver.default_url_mapping),
         validators=_validators)
+
     validator.orig_iter_errors = validator.iter_errors
 
     # We can't validate anything that looks like an external
@@ -225,13 +239,34 @@ def _create_validator(_validators=YAML_VALIDATORS):
     return validator
 
 
+# We want to load mappings in schema as ordered dicts
+class OrderedLoader(_yaml_base_loader):
+    pass
+
+
+def construct_mapping(loader, node):
+    loader.flatten_mapping(node)
+    return OrderedDict(loader.construct_pairs(node))
+
+
+OrderedLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    construct_mapping)
+
+
+if six.PY2:
+    # Load strings in as Unicode on Python 2
+    OrderedLoader.add_constructor('tag:yaml.org,2002:str',
+                                  OrderedLoader.construct_scalar)
+
+
 @lru_cache()
 def _load_schema(url):
     with generic_io.get_file(url) as fd:
         if isinstance(url, six.text_type) and url.endswith('json'):
-            result = json.load(fd)
+            result = json.load(fd, object_pairs_hook=OrderedDict)
         else:
-            result = yaml.load(fd, Loader=_yaml_base_loader)
+            result = yaml.load(fd, Loader=OrderedLoader)
     return result
 
 
@@ -256,7 +291,8 @@ def _make_resolver(url_mapping):
         '', {}, cache_remote=False, handlers=handlers)
 
 
-def load_schema(url, resolver=None):
+@lru_cache()
+def load_schema(url, resolver=None, resolve_references=False):
     """
     Load a schema from the given URL.
 
@@ -270,14 +306,37 @@ def load_schema(url, resolver=None):
         callable must take a string and return a string or `None`.
         This is useful, for example, when a remote resource has a
         mirror on the local filesystem that you wish to use.
+
+    resolve_references : bool, optional
+        If `True`, resolve all `$ref` references.
     """
     if resolver is None:
         resolver = mresolver.default_url_mapping
     loader = _make_schema_loader(resolver)
-    return loader(url)
+    schema = loader(url)
+
+    if resolve_references:
+        def resolve_refs(node):
+            if isinstance(node, dict) and '$ref' in node:
+                suburl = generic_io.resolve_uri(url, node['$ref'])
+                suburl = resolver(suburl)
+                if suburl == url:
+                    subschema = schema
+                else:
+                    subschema = load_schema(suburl, resolver, True)
+                parts = urlparse.urlparse(suburl)
+                fragment = parts.fragment
+                subschema_fragment = reference.resolve_fragment(
+                    subschema, fragment)
+                return subschema_fragment
+            return node
+        schema = treeutil.walk_and_modify(schema, resolve_refs)
+
+    return schema
 
 
-def validate(instance, ctx, _validators=YAML_VALIDATORS, *args, **kwargs):
+def validate(instance, ctx=None, schema={},
+             _validators=None, *args, **kwargs):
     """
     Validate the given instance (which must be a tagged tree) against
     the appropriate schema.  The schema itself is located using the
@@ -292,7 +351,25 @@ def validate(instance, ctx, _validators=YAML_VALIDATORS, *args, **kwargs):
 
     ctx : AsdfFile context
         Used to resolve tags and urls
+
+    schema : schema, optional
+        Explicit schema to use.  If not provided, the schema to use
+        is determined by the tag on instance (or subinstance).
+
+    _validators : dict, optional
+        A dictionary mapping properties to validators to use (instead
+        of the built-in ones and ones provided by extension types).
     """
+    if ctx is None:
+        from .asdf import AsdfFile
+        ctx = AsdfFile()
+
+    if _validators is None:
+        validators = util.HashableDict(YAML_VALIDATORS.copy())
+        validators.update(ctx._extensions.validators)
+    else:
+        validators = _validators
+
     kwargs['resolver'] = _make_resolver(ctx.url_mapping)
 
     # We don't just call validators.validate() directly here, because
@@ -300,10 +377,10 @@ def validate(instance, ctx, _validators=YAML_VALIDATORS, *args, **kwargs):
     # time of this writing, it was half of the runtime of the unit
     # test suite!!!).  Instead, we assume that the schemas are valid
     # through the running of the unit tests, not at run time.
-    cls = _create_validator(_validators=_validators)
-    validator = cls({}, *args, **kwargs)
+    cls = _create_validator(_validators=validators)
+    validator = cls(schema, *args, **kwargs)
     validator.ctx = ctx
-    validator.validate(instance)
+    validator.validate(instance, _schema=(schema or None))
 
 
 def fill_defaults(instance, ctx):
@@ -318,7 +395,7 @@ def fill_defaults(instance, ctx):
     ctx : AsdfFile context
         Used to resolve tags and urls
     """
-    validate(instance, ctx, FILL_DEFAULTS)
+    validate(instance, ctx, _validators=FILL_DEFAULTS)
 
 
 def remove_defaults(instance, ctx):
@@ -333,7 +410,7 @@ def remove_defaults(instance, ctx):
     ctx : AsdfFile context
         Used to resolve tags and urls
     """
-    validate(instance, ctx, REMOVE_DEFAULTS)
+    validate(instance, ctx, _validators=REMOVE_DEFAULTS)
 
 
 def check_schema(schema):

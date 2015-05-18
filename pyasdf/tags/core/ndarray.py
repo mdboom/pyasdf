@@ -7,34 +7,35 @@ import sys
 import numpy as np
 from numpy import ma
 
+from jsonschema import ValidationError
+
 from astropy.extern import six
 
 from ...asdftypes import AsdfType
-from ... import treeutil
 from ... import util
 from ... import yamlutil
 
 
 _datatype_names = {
-    'int8': 'i1',
-    'int16': 'i2',
-    'int32': 'i4',
-    'int64': 'i8',
-    'uint8': 'u1',
-    'uint16': 'u2',
-    'uint32': 'u4',
-    'uint64': 'u8',
-    'float32': 'f4',
-    'float64': 'f8',
-    'complex64': 'c8',
-    'complex128': 'c16',
-    'bool8': 'b1'
+    'int8'       : 'i1',
+    'int16'      : 'i2',
+    'int32'      : 'i4',
+    'int64'      : 'i8',
+    'uint8'      : 'u1',
+    'uint16'     : 'u2',
+    'uint32'     : 'u4',
+    'uint64'     : 'u8',
+    'float32'    : 'f4',
+    'float64'    : 'f8',
+    'complex64'  : 'c8',
+    'complex128' : 'c16',
+    'bool8'      : 'b1'
 }
 
 
 _string_datatype_names = {
-    'ascii': 'S',
-    'ucs4': 'U'
+    'ascii' : 'S',
+    'ucs4'  : 'U'
 }
 
 
@@ -46,8 +47,10 @@ def asdf_byteorder_to_numpy_byteorder(byteorder):
     raise ValueError("Invalid ASDF byteorder '{0}'".format(byteorder))
 
 
-def asdf_datatype_to_numpy_dtype(datatype, byteorder):
-    if isinstance(datatype, six.text_type) and datatype in _datatype_names:
+def asdf_datatype_to_numpy_dtype(datatype, byteorder=None):
+    if byteorder is None:
+        byteorder = sys.byteorder
+    if isinstance(datatype, six.string_types) and datatype in _datatype_names:
         datatype = _datatype_names[datatype]
         byteorder = asdf_byteorder_to_numpy_byteorder(byteorder)
         return np.dtype(str(byteorder + datatype))
@@ -130,7 +133,7 @@ def numpy_dtype_to_asdf_datatype(dtype, include_byteorder=True):
     raise ValueError("Unknown dtype {0}".format(dtype))
 
 
-def inline_data_asarray(inline, dtype):
+def inline_data_asarray(inline, dtype=None):
     # np.asarray doesn't handle structured arrays unless the innermost
     # elements are tuples.  To do that, we drill down the first
     # element of each level until we find a single item that
@@ -331,12 +334,6 @@ class NDArrayType(AsdfType):
             raise AttributeError()
         return getattr(self._make_array(), attr)
 
-    def __getitem__(self, item):
-        return self._make_array()[item]
-
-    def __setitem__(self, item, val):
-        self._make_array()[item] = val
-
     @classmethod
     def from_tree(cls, node, ctx):
         if isinstance(node, list):
@@ -471,3 +468,100 @@ class NDArrayType(AsdfType):
                 node.block.array_storage
             return node._make_array()
         return node
+
+
+def _make_operation(name):
+    def __operation__(self, *args):
+        return getattr(self._make_array(), name)(*args)
+    return __operation__
+
+
+for op in [
+        '__neg__', '__pos__', '__abs__', '__invert__', '__complex__',
+        '__int__', '__long__', '__float__', '__oct__', '__hex__',
+        '__lt__', '__le__', '__eq__', '__ne__', '__gt__', '__ge__',
+        '__cmp__', '__rcmp__', '__add__', '__sub__', '__mul__',
+        '__floordiv__', '__mod__', '__divmod__', '__pow__',
+        '__lshift__', '__rshift__', '__and__', '__xor__', '__or__',
+        '__div__', '__truediv__', '__radd__', '__rsub__', '__rmul__',
+        '__rdiv__', '__rtruediv__', '__rfloordiv__', '__rmod__',
+        '__rdivmod__', '__rpow__', '__rlshift__', '__rrshift__',
+        '__rand__', '__rxor__', '__ror__', '__iadd__', '__isub__',
+        '__imul__', '__idiv__', '__itruediv__', '__ifloordiv__',
+        '__imod__', '__ipow__', '__ilshift__', '__irshift__',
+        '__iand__', '__ixor__', '__ior__', '__getitem__',
+        '__delitem__', '__contains__', '__setitem__']:
+    setattr(NDArrayType, op, _make_operation(op))
+
+
+def validate_ndim(validator, ndim, instance, schema):
+    try:
+        array = np.asarray(instance)
+    except:
+        yield ValidationError(
+            "Must be an array", instance=repr(instance))
+
+    if array.ndim > ndim:
+        yield ValidationError(
+            "Wrong number of dimensions: Expected {0}, got {1}".format(
+                ndim, instance.ndim), instance=repr(instance))
+
+
+def validate_datatype(validator, datatype, instance, schema):
+    print("validate_datatype", instance)
+    if isinstance(instance, list):
+        array = inline_data_asarray(instance)
+        in_datatype, _ = numpy_dtype_to_asdf_datatype(array.dtype)
+    elif isinstance(instance, dict):
+        if 'datatype' in instance:
+            in_datatype = instance['datatype']
+        elif 'data' in instance:
+            array = inline_data_asarray(instance['data'])
+            in_datatype, _ = numpy_dtype_to_asdf_datatype(array.dtype)
+        else:
+            raise ValidationError("Not an array")
+
+    if datatype == in_datatype:
+        return
+
+    np_datatype = asdf_datatype_to_numpy_dtype(datatype)
+    np_in_datatype = asdf_datatype_to_numpy_dtype(in_datatype)
+
+    if not np_datatype.fields:
+        if np_in_datatype.fields:
+            yield ValidationError(
+                "Expected scalar datatype '{0}', got '{1}'".format(
+                    datatype, in_datatype))
+
+        if not np.can_cast(np_in_datatype, np_datatype, 'safe'):
+            yield ValidationError(
+                "Can not safely cast from '{0}' to '{1}' ".format(
+                    in_datatype, datatype))
+
+    else:
+        if not np_in_datatype.fields:
+            yield ValidationError(
+                "Expected structured datatype '{0}', got '{1}'".format(
+                    datatype, in_datatype))
+
+        if len(in_datatype.fields) != len(datatype.fields):
+            yield ValidationError(
+                "Mismatch in number of columns: "
+                "Expected {0}, got {1}".format(
+                    len(datatype), len(in_datatype)))
+
+        for i in xrange(len(np_datatype.fields)):
+            in_type = np_in_datatype[i]
+            out_type = np_datatype[i]
+            if not np.can_cast(in_type, out_type, 'safe'):
+                yield ValidationError(
+                    "Can not safely cast to expected datatype: "
+                    "Expected {0}, got {1}".format(
+                        numpy_dtype_to_asdf_datatype(out_type)[0],
+                        numpy_dtype_to_asdf_datatype(in_type)[0]))
+
+
+NDArrayType.validators = {
+    'ndim': validate_ndim,
+    'datatype': validate_datatype
+}

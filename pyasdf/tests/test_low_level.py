@@ -752,3 +752,23 @@ def test_atomic_write(tmpdir):
 
     with asdf.AsdfFile.open(tmpfile) as ff:
         ff.write_to(tmpfile)
+
+
+def test_copy(tmpdir):
+    tmpdir = str(tmpdir)
+
+    my_array = np.random.rand(8, 8)
+    tree = {'my_array': my_array, 'foo': {'bar': 'baz'}}
+    ff = asdf.AsdfFile(tree)
+    ff.write_to(os.path.join(tmpdir, 'test.asdf'))
+
+    with asdf.AsdfFile.open(os.path.join(tmpdir, 'test.asdf')) as ff:
+        ff2 = ff.copy()
+        ff2.tree['my_array'] *= 2
+        ff2.tree['foo']['bar'] = 'boo'
+
+        assert np.all(ff2.tree['my_array'] ==
+                      ff.tree['my_array'] * 2)
+        assert ff.tree['foo']['bar'] == 'baz'
+
+    assert_array_equal(ff2.tree['my_array'], ff2.tree['my_array'])

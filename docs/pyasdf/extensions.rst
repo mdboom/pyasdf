@@ -75,3 +75,8 @@ Then, the Python implementation.  See the `pyasdf.AsdfType` and
                      urljoin('file:', pathname2url(os.path.join(
                          os.path.dirname(__file__))) +
                          '/{url_suffix}.yaml')]
+
+Adding custom validators
+------------------------
+
+.. TODO: Write me
