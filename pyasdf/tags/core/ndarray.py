@@ -394,6 +394,8 @@ class NDArrayType(AsdfType):
         dtype, byteorder = numpy_dtype_to_asdf_datatype(
             dtype, include_byteorder=(block.array_storage != 'inline'))
 
+        byteorder = block.override_byteorder(byteorder)
+
         if block.array_storage == 'inline':
             listdata = numpy_array_to_list(data)
             result['data'] = yamlutil.custom_tree_to_tagged_tree(
@@ -538,7 +540,7 @@ def validate_datatype(validator, datatype, instance, schema):
             in_datatype, _ = numpy_dtype_to_asdf_datatype(array.dtype)
         else:
             raise ValidationError("Not an array")
-    elif isinstance(instance, np.ndarray):
+    elif isinstance(instance, (np.ndarray, NDArrayType)):
         in_datatype, _ = numpy_dtype_to_asdf_datatype(instance.dtype)
     else:
         raise ValidationError("Not an array")
