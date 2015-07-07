@@ -318,7 +318,7 @@ class BlockManager(object):
 
         elif isinstance(source, six.string_types):
             asdffile = self._asdffile().open_external(
-                source, do_not_fill_defaults=True)
+                source, fill_defaults=False)
             block = asdffile.blocks._blocks[0]
             block.array_storage = 'external'
             if block not in self._blocks:

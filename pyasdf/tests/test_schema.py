@@ -349,7 +349,7 @@ custom: !<tag:nowhere.org:custom/1.0.0/default>
 
     buff.seek(0)
     with asdf.AsdfFile.open(buff, extensions=[DefaultTypeExtension()],
-                            do_not_fill_defaults=True) as ff:
+                            fill_defaults=False) as ff:
         assert 'a' not in ff.tree['custom']
         assert 'c' not in ff.tree['custom']['b']
         ff.fill_defaults()

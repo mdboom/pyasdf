@@ -42,9 +42,9 @@ class AsdfFile(versioning.VersionedMixin):
             and if created from `AsdfFile.open`.
 
         extensions : list of AsdfExtension
-            A list of extensions to the ASDF to support when reading
-            and writing ASDF files.  See `asdftypes.AsdfExtension` for
-            more information.
+            A list of extensions to the ASDF standard to support when
+            reading and writing ASDF files.  See
+            `asdftypes.AsdfExtension` for more information.
         """
         if extensions is None or extensions == []:
             self._extensions = extension._builtin_extension_list
@@ -162,7 +162,7 @@ class AsdfFile(versioning.VersionedMixin):
         """
         return generic_io.resolve_uri(self.uri, uri)
 
-    def open_external(self, uri, do_not_fill_defaults=False):
+    def open_external(self, uri, fill_defaults=True):
         """
         Open an external ASDF file, from the given (possibly relative)
         URI.  There is a cache (internal to this ASDF file) that ensures
@@ -174,8 +174,9 @@ class AsdfFile(versioning.VersionedMixin):
             An absolute or relative URI to resolve against the URI of
             this ASDF file.
 
-        do_not_fill_defaults : bool, optional
-            When `True`, do not fill in missing default values.
+        fill_defaults : bool, optional
+            When `False`, do not fill in missing default values.
+            (Default: `True`).
 
         Returns
         -------
@@ -195,7 +196,7 @@ class AsdfFile(versioning.VersionedMixin):
         if asdffile is None:
             asdffile = self.open(
                 resolved_uri,
-                do_not_fill_defaults=do_not_fill_defaults)
+                fill_defaults=fill_defaults)
             self._external_asdf_by_uri[resolved_uri] = asdffile
         return asdffile
 
@@ -345,7 +346,7 @@ class AsdfFile(versioning.VersionedMixin):
     @classmethod
     def _open_impl(cls, self, fd, uri=None, mode='r',
                    validate_checksums=False,
-                   do_not_fill_defaults=False,
+                   fill_defaults=True,
                    _get_yaml_content=False):
         fd = generic_io.get_file(fd, mode=mode, uri=uri)
 
@@ -389,7 +390,7 @@ class AsdfFile(versioning.VersionedMixin):
                 fd, past_magic=True, validate_checksums=validate_checksums)
 
         tree = reference.find_references(tree, self)
-        if not do_not_fill_defaults:
+        if fill_defaults:
             schema.fill_defaults(tree, self)
         schema.validate(tree, self)
         tree = yamlutil.tagged_tree_to_custom_tree(tree, self)
@@ -403,7 +404,7 @@ class AsdfFile(versioning.VersionedMixin):
     def open(cls, fd, uri=None, mode='r',
              validate_checksums=False,
              extensions=None,
-             do_not_fill_defaults=False):
+             fill_defaults=True):
         """
         Open an existing ASDF file.
 
@@ -426,12 +427,13 @@ class AsdfFile(versioning.VersionedMixin):
             Requires reading the entire file, so disabled by default.
 
         extensions : list of AsdfExtension
-            A list of extensions to the ASDF to support when reading
-            and writing ASDF files.  See `asdftypes.AsdfExtension` for
-            more information.
+            A list of extensions to the ASDF standard to support when
+            reading and writing ASDF files.  See
+            `asdftypes.AsdfExtension` for more information.
 
-        do_not_fill_defaults : bool, optional
-            When `True`, do not fill in missing default values.
+        fill_defaults : bool, optional
+            When `False`, do not fill in missing default
+            values. (Default: `True`)
 
         Returns
         -------
@@ -443,15 +445,15 @@ class AsdfFile(versioning.VersionedMixin):
         return cls._open_impl(
             self, fd, uri=uri, mode=mode,
             validate_checksums=validate_checksums,
-            do_not_fill_defaults=do_not_fill_defaults)
+            fill_defaults=fill_defaults)
 
-    def _write_tree(self, tree, fd, pad_blocks):
+    def _write_tree(self, tree, fd, pad_blocks, remove_defaults):
         fd.write(constants.ASDF_MAGIC)
         fd.write(self.version_string.encode('ascii'))
         fd.write(b'\n')
 
         if len(tree):
-            yamlutil.dump_tree(tree, fd, self)
+            yamlutil.dump_tree(tree, fd, self, remove_defaults)
 
         if pad_blocks:
             padding = util.calculate_padding(
@@ -471,13 +473,13 @@ class AsdfFile(versioning.VersionedMixin):
         # reorganization, if necessary
         self._blocks.finalize(self)
 
-    def _serial_write(self, fd, pad_blocks):
-        self._write_tree(self._tree, fd, pad_blocks)
+    def _serial_write(self, fd, pad_blocks, remove_defaults):
+        self._write_tree(self._tree, fd, pad_blocks, remove_defaults)
         self.blocks.write_internal_blocks_serial(fd, pad_blocks)
         self.blocks.write_external_blocks(fd.uri, pad_blocks)
 
-    def _random_write(self, fd, pad_blocks):
-        self._write_tree(self._tree, fd, False)
+    def _random_write(self, fd, pad_blocks, remove_defaults):
+        self._write_tree(self._tree, fd, False, remove_defaults)
         self.blocks.write_internal_blocks_random_access(fd)
         self.blocks.write_external_blocks(fd.uri, pad_blocks)
 
@@ -493,7 +495,7 @@ class AsdfFile(versioning.VersionedMixin):
             del self._auto_inline
 
     def update(self, all_array_storage=None, all_array_compression=None,
-               auto_inline=None, pad_blocks=False):
+               auto_inline=None, pad_blocks=False, remove_defaults=True):
         """
         Update the file on disk in place.
 
@@ -533,6 +535,10 @@ class AsdfFile(versioning.VersionedMixin):
             return 0).  If `True`, add a default amount of padding of
             10% If a float, it is a factor to multiple content_size by
             to get the new total size.
+
+        remove_defaults : bool, optional
+            When `False`, do not remove values that are set to the
+            default in the schema.  (Default: `True`)
         """
         fd = self._fd
 
@@ -564,7 +570,7 @@ class AsdfFile(versioning.VersionedMixin):
             if not self.blocks.has_blocks_with_offset():
                 # If we don't have any blocks that are being reused, just
                 # write out in a serial fashion.
-                self._serial_write(fd, pad_blocks)
+                self._serial_write(fd, pad_blocks, remove_defaults)
                 fd.truncate(fd.tell())
                 return
 
@@ -574,7 +580,8 @@ class AsdfFile(versioning.VersionedMixin):
             # add enough space to accommodate the largest block number
             # possible there.
             tree_serialized = io.BytesIO()
-            self._write_tree(self._tree, tree_serialized, pad_blocks=False)
+            self._write_tree(self._tree, tree_serialized, pad_blocks=False,
+                             remove_defaults=remove_defaults)
             array_ref_count = [0]
             from .tags.core.ndarray import NDArrayType
 
@@ -592,18 +599,18 @@ class AsdfFile(versioning.VersionedMixin):
                     pad_blocks, fd.block_size):
                 # If we don't have any blocks that are being reused, just
                 # write out in a serial fashion.
-                self._serial_write(fd, pad_blocks)
+                self._serial_write(fd, pad_blocks, remove_defaults)
                 fd.truncate(fd.tell())
                 return
 
             fd.seek(0)
-            self._random_write(fd, pad_blocks)
+            self._random_write(fd, pad_blocks, remove_defaults)
             fd.flush()
         finally:
             self._post_write(fd)
 
     def write_to(self, fd, all_array_storage=None, all_array_compression=None,
-                 auto_inline=None, pad_blocks=False):
+                 auto_inline=None, pad_blocks=False, remove_defaults=True):
         """
         Write the ASDF file to the given file-like object.
 
@@ -652,6 +659,10 @@ class AsdfFile(versioning.VersionedMixin):
             return 0).  If `True`, add a default amount of padding of
             10% If a float, it is a factor to multiple content_size by
             to get the new total size.
+
+        remove_defaults : bool, optional
+            When `False`, do not remove values that are set to the
+            default in the schema.  (Default: `True`)
         """
         original_fd = self._fd
 
@@ -662,7 +673,7 @@ class AsdfFile(versioning.VersionedMixin):
                                 auto_inline)
 
                 try:
-                    self._serial_write(fd, pad_blocks)
+                    self._serial_write(fd, pad_blocks, remove_defaults)
                     fd.flush()
                 finally:
                     self._post_write(fd)
@@ -678,7 +689,7 @@ class AsdfFile(versioning.VersionedMixin):
         # re-validated.
         self._tree = reference.find_references(self._tree, self)
 
-    def resolve_references(self, do_not_fill_defaults=False):
+    def resolve_references(self):
         """
         Finds all external "JSON References" in the tree, loads the
         external content, and places it directly in the tree.  Saving
